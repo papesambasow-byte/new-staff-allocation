@@ -1,0 +1,11 @@
+stages:
+  - test
+  - build
+  - nexus
+  - sonar
+  - deploy
+  - oc-deploy
+include:
+  - local: 'front/.gitlab-ci.yml'
+  - local: 'server/.gitlab-ci.yml'
+

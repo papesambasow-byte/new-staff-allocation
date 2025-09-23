@@ -1,0 +1,13 @@
+.expanded-navbar {
+    width: calc(100% - 250px); /* Adjust the value based on your Sidebar's width */
+    transition: width 0.3s;
+  }
+  
+  .collapsed-navbar {
+    width: 100px; /* Adjust the value for the collapsed width */
+    transition: width 0.3s;
+  }
+
+  .short-navbar {
+    height: 65px; /* Adjust the value as needed */
+  }

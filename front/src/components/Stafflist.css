@@ -1,0 +1,11 @@
+.modal-dialog {
+    width: 600px;
+    height: 400px;
+    z-index: 7;
+    background-color: #fff;
+  }
+  
+  .modal-content {
+    background-color: #fff;
+    padding: 20px;
+  }

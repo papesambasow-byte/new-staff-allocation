@@ -1,0 +1,10 @@
+{
+    "apps" : [
+      {
+        "name"      : "staff-allocation",
+        "script"    : "npx",
+        "interpreter": "none",
+        "args": "serve -s build -p 2502"
+      }
+    ]
+  }
