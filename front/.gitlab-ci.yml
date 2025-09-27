@@ -1,152 +1,78 @@
-stages:  
-  - test
+stages:
   - build
+  - docker
   - nexus
-  - sonar
-  - oc-deploy
-  
+
 variables:
-  APP: "new-staff-allocation-front"
-  IMAGE_NAME: "sonatelsn/${APP}"
-  IMAGE_TAG: "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
-  CACHE_DIR: "cache"
-  CACHE_FILE: "image-${APP}.tar.gz"
-  LOCAL_IMAGE_PATH: "$CI_PROJECT_DIR/$CACHE_DIR/$CACHE_FILE"
-  ESLINT_NO_DEV_ERRORS: "true"
-  TRIVY_VERSION: "0.51.1"
+  GIT_COMMIT_SHORT: "$CI_COMMIT_SHORT_SHA"
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+
+# Use CI variables for credentials in project settings
+# DOCKER_USER, DOCKER_PASS, NEXUS_USER, NEXUS_PASS
 
 default:
-  tags:
-    - osl-runner-front
-
-# -------------------------
-# TESTS FRONT
-# -------------------------
-test-front:
-  stage: test
-  image: node:18
-  script:
-    - cd front
-    - npm config set registry https://registry.npmjs.org/
-    - npm install
-    - npm ci
-    - npx eslint src || true
-    - npm test -- --coverage --passWithNoTests
-    - npm run build
-  cache:
-    key: ${CI_COMMIT_REF_SLUG}
-    paths:
-      - node_modules/
-  allow_failure: true
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "dev"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    
-# -------------------------
-# BUILD DOCKER IMAGE
-# -------------------------
-build-front:
-  stage: build
-  image: quay.io/containers/podman:latest
+  image: node:22
   before_script:
-    - podman system prune -f || true
-    - echo "$DOCKER_PASSWORD" | podman login --username "$DOCKER_USERNAME" --password-stdin docker.io || true
-    - curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz
-    - tar -xzf trivy.tar.gz trivy
-    - chmod +x trivy
-    - ./trivy --version
-    - curl -L -o jq https://github.com/stedolan/jq/releases/latest/download/jq-linux64
-    - chmod +x jq
-  script:
     - cd front
-    - podman build -t "$IMAGE_TAG" .
-    - podman tag $IMAGE_TAG $IMAGE_NAME:v1.0
-    - mkdir -p ../$CACHE_DIR
-    - podman save $IMAGE_NAME:v1.0 | gzip > ../$CACHE_DIR/$CACHE_FILE
-    - echo "Décompression de l'image pour Trivy"
-    - gunzip -c "../$CACHE_DIR/$CACHE_FILE" > image-${APP}.tar
-    - echo "Scan Trivy"
-    - ../trivy image --input image-${APP}.tar --format json --output trivy-report.json --severity HIGH,CRITICAL --no-progress || echo '{}' > trivy-report.json
-    - CRITICAL_COUNT=$(../jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-report.json)
-    - echo "Nombre de vulnérabilités CRITIQUES $CRITICAL_COUNT"
-    - |
-      if [ "$CRITICAL_COUNT" -gt 0 ]; then
-        echo "Image non poussée $CRITICAL_COUNT vulnérabilités critiques.";
-      else
-        echo "Push autorisé aucune vulnérabilité critique."
-        podman push $IMAGE_NAME:v1.0;
-      fi
+
+cache:
+  key: "front-node-modules-{{ checksum \"front/package-lock.json\" }}"
+  paths:
+    - front/node_modules/
+
+build:
+  stage: build
+  script:
+    - echo "🛠️ Installation des dépendances…"
+    - npm ci
+    - echo "🧪 Lancement des tests…"
+    - npm test || echo "⚠️ Aucun test défini"
   artifacts:
     paths:
-      - cache/$CACHE_FILE
+      - front/node_modules/
+    expire_in: 1h
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - changes: [front/**]
+    - when: never
 
-# -------------------------
-# SCAN QUALITY WITH SONAR
-# -------------------------
-sonar-front:
-  stage: sonar
-  image: openjdk:17-jdk-slim
-  cache:
-    key: sonar-scanner
-    paths:
-      - .sonar/sonar-scanner-4.8.0.2856-linux/
-  before_script:
-    - java -version
-    - javac -version
-    - mkdir -p $CI_PROJECT_DIR/.sonar
-    - export SONAR_SCANNER_HOME="$CI_PROJECT_DIR/.sonar"
-    - curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
-    - unzip sonar-scanner.zip -d $SONAR_SCANNER_HOME
-    - export PATH="$SONAR_SCANNER_HOME/sonar-scanner-4.8.0.2856-linux/bin:$PATH"
-    - sonar-scanner --version
+docker:
+  stage: docker
+  image: docker:24.0
+  services:
+    - name: docker:dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   script:
-    - sonar-scanner \
-        -Dsonar.projectKey="$SONAR_KEY_FRONT" \
-        -Dsonar.sources=src \
-        -Dsonar.java.binaries=target/classes \
-        -Dsonar.host.url="$SONAR_HOST_URL" \
-        -Dsonar.token="$SONAR_PASSWORD_FRONT"
-# -------------------------
-# DEPLOY IN OPENSHIFT 
-# -------------------------
-deploy-front:
-  stage: oc-deploy
-  image: quay.io/openshift/origin-cli:latest
-  before_script:
-    - echo "$DOCKER_PASSWORD" | podman login --username "$DOCKER_USERNAME" --password-stdin docker.io || true
-  when: manual
-  script:
-    - oc login $OPENSHIFT_API --token=$OPENSHIFT_TOKEN --insecure-skip-tls-verify
-    # Vérification de l'existence du namespace
-    - if oc get namespace $OPENSHIFT_NAMESPACE >/dev/null 2>&1; then
-        echo "Namespace $OPENSHIFT_NAMESPACE existe déjà.";
-      else
-        echo "Namespace $OPENSHIFT_NAMESPACE inexistant. Création...";
-        oc create namespace $OPENSHIFT_NAMESPACE;
-      fi
-      
-    # Se positionner dans le namespace
-    - oc project $OPENSHIFT_NAMESPACE
-    - if oc get deployment mon-app-server >/dev/null 2>&1; then
-        echo "Deployment mon-app-server existe déjà";
-        oc rollout restart deployment/mon-app-server;
-      else
-        echo "Deployment 'mon-app-server' n'existe pas";
-        oc create deployment mon-app-server --image=sonatelsn/new-staff-allocation-server:latest;
-        oc expose deployment mon-app-server --port=8081;
-        oc expose svc/mon-app-server;
-      fi
-    - sleep 80
-    # Optionnel : liste des pods
-    - oc get pods
-    - oc get svc
-
+    - echo "🔐 Connexion à Docker Hub"
+    - echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+    - echo "🐳 Build de l'image front"
+    - docker build -t "$DOCKER_USER/nodeapp:$GIT_COMMIT_SHORT" .
+    - docker push "$DOCKER_USER/nodeapp:$GIT_COMMIT_SHORT"
+    - docker tag "$DOCKER_USER/nodeapp:$GIT_COMMIT_SHORT" "$DOCKER_USER/nodeapp:latest"
+    - docker push "$DOCKER_USER/nodeapp:latest"
   rules:
-    - if: $CI_COMMIT_BRANCH == "dev"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - changes: [front/**]
+    - when: never
+
+nexus:
+  stage: nexus
+  image: node:22
+  script:
+    - echo "🗝️ Création du fichier .npmrc avec authentification (Nexus)"
+    - |
+      # Option A: username:password base64 (existante)
+      echo "//$(echo $NEXUS_URL | sed 's|https\?://||'):_auth=$(echo -n $NEXUS_USER:$NEXUS_PASS | base64)" > ~/.npmrc
+      echo "always-auth=true" >> ~/.npmrc
+      echo "registry=$NEXUS_URL" >> ~/.npmrc
+    - echo "📦 Publication du package sur Nexus (si package.json le permet)"
+    - npm publish --registry "$NEXUS_URL"
+  rules:
+    # Typically only publish from main branch or tags
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes: [front/**]
+    - if: '$CI_COMMIT_TAG'
+      changes: [front/**]

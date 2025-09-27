@@ -1,11 +1,32 @@
 stages:
-  - test
-  - build
-  - nexus
-  - sonar
-  - deploy
-  - oc-deploy
-include:
-  - local: 'front/.gitlab-ci.yml'
-  - local: 'server/.gitlab-ci.yml'
+  - trigger
 
+# Trigger front pipeline only when front/ changes
+trigger_front:
+  stage: trigger
+  rules:
+    - changes:
+        - front/**
+  trigger:
+    include: 'front/.gitlab-ci.yml'
+    strategy: depend
+
+# Trigger server pipeline only when server/ changes
+trigger_server:
+  stage: trigger
+  rules:
+    - changes:
+        - server/**
+  trigger:
+    include: 'server/.gitlab-ci.yml'
+    strategy: depend
+
+# Optional: small root job for docs/README changes
+docs_check:
+  stage: trigger
+  script:
+    - echo "Docs changed"
+  rules:
+    - changes:
+        - README.md
+        - docs/**
